@@ -48,6 +48,10 @@ const (
 	// fragMinSize mirrors the lower bound OpenVPN enforces on --fragment.
 	fragMinSize = 68
 
+	// mssFixMin is the smallest useful --mssfix value: one IPv4+TCP header plus
+	// a minimal segment.
+	mssFixMin = 64
+
 	// fragReceiveWindow bounds how far out of order a sequence id may be
 	// before older reassembly buffers are abandoned.
 	fragReceiveWindow = 25

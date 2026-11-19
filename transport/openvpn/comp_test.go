@@ -166,3 +166,31 @@ func TestCompressionFramingHelpers(t *testing.T) {
 		}
 	}
 }
+
+func TestMSSFixValidation(t *testing.T) {
+	base := func() ClientConfig {
+		return ClientConfig{
+			RemoteHost: "127.0.0.1",
+			RemotePort: 1195,
+			Cipher:     CipherAES256GCM,
+			Auth:       AuthSHA512,
+			Username:   "user",
+			CA:         testCAPEM(),
+		}
+	}
+	config := base()
+	config.MSSFix = mssFixMin - 1
+	if err := config.Prepare(); err == nil {
+		t.Fatal("mss-fix below the minimum must be rejected")
+	}
+	config = base()
+	config.MSSFix = 1200
+	if err := config.Prepare(); err != nil {
+		t.Fatalf("mss-fix 1200 must be accepted: %v", err)
+	}
+	config = base()
+	config.MSSFix = fragMaxPacketBytes + 1
+	if err := config.Prepare(); err == nil {
+		t.Fatal("mss-fix above the maximum must be rejected")
+	}
+}

@@ -50,6 +50,7 @@ type OpenVPNOption struct {
 	Auth               string            `proxy:"auth,omitempty"`
 	CompLZO            string            `proxy:"comp-lzo,omitempty"`
 	Fragment           int               `proxy:"fragment,omitempty"`
+	MSSFix             int               `proxy:"mss-fix,omitempty"`
 	CA                 string            `proxy:"ca"`
 	Cert               string            `proxy:"cert,omitempty"`
 	Key                string            `proxy:"key,omitempty"`
@@ -86,6 +87,20 @@ func openVPNTransitionWindow(value *int) (time.Duration, bool, error) {
 	return time.Duration(*value) * time.Second, true, nil
 }
 
+// openVPNStackMTU returns the IP stack MTU for the tunnel. The bundled stacks
+// derive the advertised TCP MSS from the stack MTU (IPv4 MSS = mtu - 40), so an
+// explicit mss-fix is applied by lowering the stack MTU to it. This mirrors
+// OpenVPN's --mssfix, which caps encapsulated TCP segments at the given size.
+func openVPNStackMTU(mtu, mssFix int) int {
+	if mtu == 0 {
+		mtu = 1500
+	}
+	if mssFix > 0 && mssFix < mtu {
+		mtu = mssFix
+	}
+	return mtu
+}
+
 func NewOpenVPN(option OpenVPNOption) (*OpenVPN, error) {
 	if option.HandshakeTimeout < 0 {
 		return nil, errors.New("openvpn handshake timeout must be non-negative")
@@ -109,6 +124,7 @@ func NewOpenVPN(option OpenVPNOption) (*OpenVPN, error) {
 		Auth:                option.Auth,
 		CompLZO:             option.CompLZO,
 		Fragment:            option.Fragment,
+		MSSFix:              option.MSSFix,
 		CA:                  []byte(option.CA),
 		Cert:                []byte(option.Cert),
 		Key:                 []byte(option.Key),
@@ -335,9 +351,9 @@ func (o *OpenVPN) startLocked(handshakeCtx context.Context) (ipStack, resolver.R
 		log.Infoln("[OpenVPN](%s) data channel fragmentation enabled: fragment=%d", o.name, o.config.Fragment)
 	}
 
-	mtu := o.option.MTU
-	if mtu == 0 {
-		mtu = 1500
+	mtu := openVPNStackMTU(o.option.MTU, o.config.MSSFix)
+	if o.config.MSSFix > 0 {
+		log.Infoln("[OpenVPN](%s) mss-fix %d applied: ip stack mtu=%d, advertised mss=%d", o.name, o.config.MSSFix, mtu, mtu-40)
 	}
 	tunDevice, err := newIPStack(o.option.IPStack, push.Prefixes, uint32(mtu))
 	if err != nil {

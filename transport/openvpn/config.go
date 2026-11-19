@@ -51,6 +51,10 @@ type ClientConfig struct {
 	// Zero disables fragmentation; any non-zero value must be at least
 	// fragMinSize and is only valid for UDP.
 	Fragment int
+	// MSSFix mirrors OpenVPN --mssfix: the largest encapsulated TCP segment
+	// (including its IP and TCP headers) the tunnel should emit. Zero disables
+	// clamping. It does not change the data channel wire format.
+	MSSFix int
 
 	CA       []byte
 	Cert     []byte
@@ -300,6 +304,9 @@ func (c *ClientConfig) ValidateInstallScriptSubset() error {
 	}
 	if c.Proto != ProtoUDP && c.Proto != ProtoTCP {
 		return fmt.Errorf("unsupported openvpn proto %q: only udp and tcp are supported", c.Proto)
+	}
+	if c.MSSFix != 0 && (c.MSSFix < mssFixMin || c.MSSFix > fragMaxPacketBytes) {
+		return fmt.Errorf("openvpn mss-fix %d is out of range, expected %d..%d", c.MSSFix, mssFixMin, fragMaxPacketBytes)
 	}
 	if c.Fragment != 0 {
 		// Upstream: --fragment can only be used with --proto udp.
