@@ -49,6 +49,7 @@ type OpenVPNOption struct {
 	DataCipherFallback string            `proxy:"data-ciphers-fallback,omitempty"`
 	Auth               string            `proxy:"auth,omitempty"`
 	CompLZO            string            `proxy:"comp-lzo,omitempty"`
+	Fragment           int               `proxy:"fragment,omitempty"`
 	CA                 string            `proxy:"ca"`
 	Cert               string            `proxy:"cert,omitempty"`
 	Key                string            `proxy:"key,omitempty"`
@@ -107,6 +108,7 @@ func NewOpenVPN(option OpenVPNOption) (*OpenVPN, error) {
 		FallbackCipher:      option.DataCipherFallback,
 		Auth:                option.Auth,
 		CompLZO:             option.CompLZO,
+		Fragment:            option.Fragment,
 		CA:                  []byte(option.CA),
 		Cert:                []byte(option.Cert),
 		Key:                 []byte(option.Key),
@@ -329,6 +331,9 @@ func (o *OpenVPN) startLocked(handshakeCtx context.Context) (ipStack, resolver.R
 		return nil, nil, fmt.Errorf("make OpenVPN handshake: %w", err)
 	}
 	log.Debugln("[OpenVPN](%s) handshake complete: prefixes=%v routes=%v peer-id=%d dns=%v redirect=%t block-ipv6=%t", o.name, push.Prefixes, push.Routes, push.PeerID, push.DNS, push.Redirect, push.BlockIPv6)
+	if o.config.Fragment > 0 {
+		log.Infoln("[OpenVPN](%s) data channel fragmentation enabled: fragment=%d", o.name, o.config.Fragment)
+	}
 
 	mtu := o.option.MTU
 	if mtu == 0 {

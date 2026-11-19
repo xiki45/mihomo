@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"hash"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -248,7 +249,7 @@ func DeriveClientKeyMaterial(sources KeySource2, clientSession, serverSession Se
 	}, nil
 }
 
-func InstallScriptOptionsString(proto, cipher, auth string, compLZO string) string {
+func InstallScriptOptionsString(proto, cipher, auth string, compLZO string, fragment int) string {
 	protoName := "UDPv4"
 	if proto == ProtoTCP {
 		protoName = "TCPv4_CLIENT"
@@ -259,9 +260,21 @@ func InstallScriptOptionsString(proto, cipher, auth string, compLZO string) stri
 	}
 	mtu := "1550"
 	comp := ""
-	if compLZO == CompLzoYes {
+	if compLZO == CompLzoYes || compLZO == CompLzoNo {
+		// Upstream options_string() emits comp-lzo for every active
+		// compression context, including the stub-only comp-lzo no.
 		mtu = "1544"
 		comp = "comp-lzo,"
+	}
+	if fragment > 0 {
+		// The fragment header is part of the encrypted payload, so upstream
+		// adds its 4 bytes to link-mtu and advertises the (obsolete) OCC
+		// marker mtu-dynamic, which is how --fragment shows up in the
+		// options string of a stock OpenVPN client.
+		if linkMTU, err := strconv.Atoi(mtu); err == nil {
+			mtu = strconv.Itoa(linkMTU + 4)
+		}
+		comp += "mtu-dynamic,"
 	}
 	return fmt.Sprintf("V4,dev-type tun,link-mtu %s,tun-mtu 1500,proto %s,%scipher %s,auth %s,keysize %s,key-method 2,tls-client", mtu, protoName, comp, cipher, auth, keysize)
 }

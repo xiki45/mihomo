@@ -77,7 +77,7 @@ func marshalTestServerKeyMethod(t *testing.T) []byte {
 	out = append(out, KeyMethod2)
 	out = append(out, random1[:]...)
 	out = append(out, random2[:]...)
-	out = appendOpenVPNString(out, InstallScriptOptionsString(ProtoUDP, CipherAES128GCM, AuthSHA256, ""))
+	out = appendOpenVPNString(out, InstallScriptOptionsString(ProtoUDP, CipherAES128GCM, AuthSHA256, "", 0))
 	out = appendOpenVPNString(out, "")
 	out = appendOpenVPNString(out, "")
 	out = appendOpenVPNString(out, "")

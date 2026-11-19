@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/common/contextutils"
+	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/tls"
 	"golang.org/x/sync/semaphore"
 )
@@ -35,6 +36,9 @@ const (
 type Client struct {
 	config *ClientConfig
 	mux    *PacketMux
+	// fragmenter frames outgoing data packets and reassembles incoming ones
+	// when data channel fragmentation is enabled. Nil means disabled.
+	fragmenter *fragmenter
 
 	control *ControlChannel
 	// controlConn is the net.Conn adapter wrapping the control channel.
@@ -117,6 +121,13 @@ func NewClient(config *ClientConfig, io PacketIO) (*Client, error) {
 	if io == nil {
 		return nil, errors.New("nil openvpn packet io")
 	}
+	var frag *fragmenter
+	if config.Fragment != 0 {
+		frag = newFragmenter(config.Fragment)
+		if frag == nil {
+			return nil, fmt.Errorf("invalid openvpn fragment size %d", config.Fragment)
+		}
+	}
 	var crypt ControlCryptor
 	if len(config.TLSCryptV2Key) > 0 || len(config.TLSCryptV2WrappedKey) > 0 {
 		var err error
@@ -148,6 +159,7 @@ func NewClient(config *ClientConfig, io PacketIO) (*Client, error) {
 	client := &Client{
 		config:                config,
 		mux:                   mux,
+		fragmenter:            frag,
 		control:               control,
 		controlConn:           NewControlConn(control),
 		runCtx:                runCtx,
@@ -286,8 +298,12 @@ func (c *Client) doKeyExchange(ctx context.Context) (*PushReply, error) {
 		primaryCipher = normalizeCipher(c.config.DataCiphers[0])
 	}
 
+	optionsString := InstallScriptOptionsString(c.config.Proto, primaryCipher, c.config.Auth, c.config.CompLZO, c.config.Fragment)
+	if c.fragmenter != nil {
+		log.Debugln("[OpenVPN] key method 2 options string: %s", optionsString)
+	}
 	clientRecord, err := NewClientKeyMethod2Record(
-		InstallScriptOptionsString(c.config.Proto, primaryCipher, c.config.Auth, c.config.CompLZO),
+		optionsString,
 		InstallScriptPeerInfo(primaryCipher, c.config.DataCiphers, c.config.CompLZO, c.config.PeerInfo),
 		c.authUser,
 		c.authPass,
@@ -694,6 +710,21 @@ func (c *Client) writeDataPacket(ctx context.Context, packet []byte, compress bo
 			return err
 		}
 		packet = compressed
+	} else if c.config.compressionStub() {
+		// comp-lzo no still frames the data channel: one leading 0xfa byte
+		// says "not compressed". Keepalive pings carry it too.
+		framed := make([]byte, 0, len(packet)+1)
+		framed = append(framed, compNoCompressByte)
+		packet = append(framed, packet...)
+	}
+	// Fragment after compression: once fragment is negotiated every data
+	// packet, keepalive ping included, carries a fragment header.
+	packets := [][]byte{packet}
+	if c.fragmenter != nil {
+		packets = c.fragmenter.split(packet)
+		if len(packets) == 0 {
+			return nil
+		}
 	}
 
 	// The no-evidence selection window is independent of AUTH_PENDING. The
@@ -774,20 +805,31 @@ func (c *Client) writeDataPacket(ctx context.Context, packet []byte, compress bo
 			c.dataLock.RUnlock()
 			continue
 		}
-		encrypted, err := outbound.Encrypt(packet)
-		c.dataLock.RUnlock()
-		if err != nil {
-			return err
-		}
-		// Once encryption completed under the epoch lock, the packet is an
-		// in-flight datagram. Release state before transport I/O: network delay
-		// can naturally carry a valid packet across a later rekey, and a blocked
-		// socket must not prevent installDataChannel from committing that rekey.
-		if err := c.mux.WriteDataPacket(ctx, encrypted); err != nil {
-			if errors.Is(err, errPacketDropped) {
-				return nil
+		// Every fragment consumes its own packet id, so all of them are
+		// encrypted while the epoch lock is held; releasing it between
+		// fragments would let a rekey split one datagram over two keys.
+		encrypted := make([][]byte, 0, len(packets))
+		for _, plain := range packets {
+			sealed, err := outbound.Encrypt(plain)
+			if err != nil {
+				c.dataLock.RUnlock()
+				return err
 			}
-			return err
+			encrypted = append(encrypted, sealed)
+		}
+		c.dataLock.RUnlock()
+		// Once encryption completed under the epoch lock, the packets are
+		// in-flight datagrams. Release state before transport I/O: network
+		// delay can naturally carry a valid packet across a later rekey, and a
+		// blocked socket must not prevent installDataChannel from committing
+		// that rekey.
+		for _, sealed := range encrypted {
+			if err := c.mux.WriteDataPacket(ctx, sealed); err != nil {
+				if errors.Is(err, errPacketDropped) {
+					return nil
+				}
+				return err
+			}
 		}
 		c.markSend()
 		return nil
@@ -819,6 +861,24 @@ func (c *Client) ReadIPPacket(ctx context.Context) ([]byte, error) {
 			continue
 		}
 		c.markReceive()
+
+		if c.fragmenter != nil {
+			reassembled, complete := c.fragmenter.feed(plain)
+			if !complete {
+				continue
+			}
+			plain = reassembled
+		}
+
+		if c.config.compressionStub() {
+			// Upstream lzo_decompress accepts only the no-compress marker and
+			// drops anything else, so a packet without it is not ours.
+			if len(plain) == 0 || plain[0] != compNoCompressByte {
+				continue
+			}
+			plain = plain[1:]
+		}
+
 		if IsPingPacket(plain) {
 			continue
 		}
